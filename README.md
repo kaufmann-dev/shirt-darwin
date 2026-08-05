@@ -12,17 +12,19 @@ climbers.example.com
 woodworkers.example.com
 ```
 
-The storefronts share the same underlying product, fulfillment, analytics, and advertising systems. Printify or a similar provider produces and ships each order.
+The storefronts share the same product, fulfillment, analytics, and advertising systems. Printify or a similar provider produces and ships each order. Twenty storefronts are live at a time: 10 proven champions and 10 new challengers.
 
 ## The loop
 
-1. Research niche communities and identify promising interests.
-2. Generate designs and a focused storefront for each niche.
-3. Run small, controlled Meta ad tests.
-4. Measure sales, costs, and contribution profit.
-5. Improve promising niches and stop weak experiments.
-6. Reinvest in repeatable winners.
-7. Launch a new batch each week.
+1. Research communities and select 10 promising niches.
+2. Create their designs, ads, and storefronts.
+3. Give every challenger the same test period and budget.
+4. Measure sales, costs, refunds, and contribution profit.
+5. Promote challengers that clearly outperform the weakest champions.
+6. Retire displaced champions and unsuccessful challengers without deleting their data.
+7. Launch 10 new challengers and repeat every week.
+
+Champions are not replaced unless a challenger clearly performs better. The system uses every result to improve the next week's niche, design, pricing, copy, and advertising decisions.
 
 ## Decision metric
 
