@@ -1,281 +1,127 @@
-# Shirt Darwin Architecture and Operating Workflow
-
-Status: discovery draft; current decisions and remaining questions are listed near the end.
+# Shirt Darwin Architecture and Workflow
 
-## Purpose
+Status: implemented v1 architecture.
 
-Shirt Darwin is an experiment system wrapped around a print-on-demand commerce business. Its job is not merely to publish stores. It must run comparable niche experiments, preserve the evidence from every attempt, and keep humans in control of legal, brand, budget, and promotion decisions.
+## Product boundary
 
-The first milestone is one complete, auditable loop:
+Shirt Darwin runs comparable print-on-demand experiments for one Austrian merchant launching into the contiguous United States and Washington, DC. Customer storefronts are English and USD. Shopify's neutral parent merchant identity appears at checkout and on shared legal pages.
 
-1. Select one niche.
-2. Approve one or more designs.
-3. Publish one storefront and product.
-4. Run one paid acquisition test with a fixed budget.
-5. Fulfill any orders and handle customer issues.
-6. Attribute revenue and all variable costs.
-7. Calculate contribution profit.
-8. Record a human decision to continue, revise, or retire the experiment.
+One modular SvelteKit application has three surfaces:
 
-Scaling to the 10-challenger/10-champion weekly model comes only after this loop works reliably.
+- Distinct brand storefronts on `<brand>.<root-domain>`.
+- A neutral company site and shared legal/contact pages on the root domain.
+- A Pocket ID-protected operator console at `/admin` and scoped MCP endpoint at `/mcp`.
 
-## Proposed operating principles
+PostgreSQL is the operational database and job queue. Separate private and public Cloudflare R2 buckets hold draft/print assets and published storefront assets respectively. The application is one Coolify/Nixpacks deployment with one process and one replica in v1.
 
-- A workflow state machine, not a collection of scripts, is the source of truth for each experiment.
-- Automation may prepare or execute reversible, bounded work. A human approves legal exposure, public publication, new ad spend, and champion promotion or retirement.
-- An experiment's budget, duration, products, prices, creatives, and success criteria are frozen when the test starts. Changes create a new experiment version rather than silently contaminating the result.
-- Provider-specific behavior stays behind adapters so the business model does not depend on one fulfillment, payment, analytics, or advertising vendor.
-- Raw provider events and normalized business records are both retained. Failed or retired experiments are archived, never deleted through normal operations.
-- The operational database is sufficient for the first loop. A separate warehouse is added only when reporting volume or cross-experiment analysis justifies it.
+## Sources of truth
 
-## System boundary
+- Shirt Darwin owns brand drafts and immutable published revisions, assets, experiments, campaign mappings, first-party attribution, normalized economics, decisions, issues, legal text, and audit history.
+- Shopify owns products, variants, prices, carts, hosted checkout, payments, orders, refunds, and customer data.
+- Printful owns production, fulfillment, shipping, and provider costs.
+- Meta owns campaigns, delivery, spend, and Meta-attributed results.
+- Pocket ID owns operator identity and MCP authorization.
 
-The proposed system has one shared SvelteKit platform with two surfaces:
+The local database never stores customer names, email addresses, street addresses, or raw provider webhook bodies. It stores stable provider IDs, order numbers, region codes, item mappings, amounts, statuses, and timestamps needed for operations and economics.
 
-- The customer storefront renders niche-specific branding, copy, catalog, and tracking according to the request's subdomain, with Shopify providing the commerce backend and checkout.
-- The general domain provides public legal pages and a private operator console for research, reminders, approvals, experiment state, products, creatives, budgets, orders, exceptions, and decisions.
+## Storefront model
 
-Behind those surfaces are five logical parts:
+Every storefront uses the same typed renderer but a distinct versioned manifest. The manifest controls identity, SEO, semantic color and typography tokens, navigation, typed sections, assets, section order, and one of the `editorial`, `catalog`, or `poster` compositions. Arbitrary HTML, CSS, and scripts are rejected.
 
-1. The experiment controller enforces state transitions, approval gates, frozen test settings, and the champion/challenger rules.
-2. The commerce core owns niches, storefront configuration, products, prices, customers, orders, refunds, and cost records.
-3. Provider adapters communicate with print-on-demand, payments or commerce, advertising, analytics, tax, email, and AI services.
-4. Background workers handle provider synchronization, webhook processing, asset generation, metric refreshes, alerts, and retries.
-5. The evidence store retains research notes, prompts, generated assets, approvals, raw events, calculated metrics, and decision rationale.
+A storefront has only `draft`, `live`, or `archived` status. It has one mutable draft pointer and immutable revision records. The authenticated root-domain preview can render a selected draft revision. Creating an experiment validates the complete three-design catalog and confirmed assets, then atomically freezes a detached catalog snapshot onto the bound revision. A previously published or frozen revision is forked first. Draft and catalog mutations are blocked while a planned or running experiment owns that revision. Publishing is an explicit operator action that rechecks the frozen boundary under the storefront lock and atomically points the live storefront at the validated revision.
 
-These can begin as modules in one deployable application with one relational database, one job runner, and object storage. They should not begin as independently deployed microservices. The application is hosted on the operator's personal VPS through Coolify.
+Frozen revisions own brand, design, product, image, and variant-assortment content. Shopify still owns operational commerce facts: a live storefront overlays only current USD prices and availability for the frozen variant IDs. Missing or unavailable provider facts fail closed. Product mappings are versioned instead of repurposed, so preparing a replacement assortment cannot change the currently published revision.
 
-## Current product decisions
+Publication readiness is derived, not a workflow state. It verifies the manifest, uploaded-and-confirmed image/mockup/print assets, exactly three design families, design provenance/rights evidence, an operator-active and provider-available US/USD T-shirt/hoodie/crewneck mapping for each design, a valid support contact, published imprint/privacy/terms/returns documents, and a planned or running experiment bound to that exact immutable draft revision and hero T-shirt.
 
-- The first launch market is the contiguous United States and Washington, DC, using English, USD, and one consistent domestic fulfillment route.
-- The architecture remains global-ready, but each additional market must be enabled explicitly after its taxes, duties, fulfillment, delivery, support, and unit economics are validated.
-- Shopify owns the commerce catalog, checkout, payments, customers, and orders.
-- SvelteKit powers the central operator application and the shared storefront foundation.
-- Every storefront has a distinct brand assembled from versioned configuration, design tokens, assets, and reusable layout options; storefront code is not copied into separate applications.
-- Meta is the initial paid advertising channel.
-- One founder is the operator and holds every approval role initially.
-- The product is manual-first. The operator uses external AI tools directly for research, creative work, and website inputs instead of embedding unattended AI agents for tasks that are easy to perform interactively.
-- The platform centralizes workflow status, reminders, operational data, analysis, and decision history. Public launches, campaign operation, refunds, budget changes, and final promotion or retirement decisions remain manual.
-- A physical product sample is not required before the first paid test.
-- Test budgets and decision thresholds are configurable by the operator rather than fixed globally.
-- The print-on-demand provider is not selected and must be evaluated separately.
+The initial catalog is design-first. Each of three design families links separate Shopify products for:
 
-## Core records
+- Gildan 5000 T-shirt
+- Gildan 18500 hoodie
+- Gildan 18000 crewneck sweatshirt
 
-The initial data model should distinguish the following records:
+The operator creates those products through Printful and Shopify. Shirt Darwin imports each product from Shopify by handle and stores its stable Shopify product identity, current provider health, and a validated display snapshot. Replacing a garment mapping deactivates the working version and creates or reactivates a separate identity row; historical published revisions retain their original mapping. Printful v2 does not provide the product-import path used here; optional Printful product IDs are entered manually.
 
-- A `Niche` is a community or interest being considered. It persists across multiple experiments.
-- A `Storefront` is the niche-specific brand, domain mapping, theme configuration, copy, policies, and catalog presentation.
-- A `Design` is a versioned creative asset with source, prompt or provenance, rights-review status, and production files.
-- A `Product` joins an approved design to a garment variant, print provider blueprint, price, and production cost.
-- A `Creative` is a versioned ad asset and copy combination.
-- An `Experiment` freezes the tested niche, storefront version, products, creatives, audience, channel, budget, dates, and decision thresholds.
-- An `Approval` records who approved which immutable version, when, and with what notes.
-- An `Order` and its cost ledger record the complete economics of a purchase, refund, replacement, tax, fees, fulfillment, and shipping.
-- An `AdSpendRecord` stores provider spend at the smallest practical campaign and time grain.
-- A `Decision` records the calculated evidence, recommendation, human choice, and rationale.
+## Authentication and authorization
 
-Contribution profit should be derived from ledger entries rather than stored as a manually editable number.
+Better Auth connects the root admin to Pocket ID Generic OAuth. Email/password, signup, password recovery, and customer accounts are absent. Pocket ID restricts the client to the operator group and the application requires the configured subject. Every server action and admin JSON endpoint rechecks the session; route layout protection is not treated as authorization.
 
-## Experiment state machine
+The stateless MCP server validates Pocket ID JWT signature, issuer, audience, expiry, subject, and scope. It advertises OAuth protected-resource metadata and supports separate read, draft-write, and asset-write scopes. It can create and revise structured drafts, issue signed uploads, validate drafts, return authenticated preview URLs, and read aggregate metrics/issues. It cannot publish, archive, expose order-level/customer data, or change Shopify, Printful, or Meta.
 
-Every experiment follows one forward-moving workflow:
+## Experiment and economics
 
-```text
-idea
-  -> researching
-  -> niche_review
-  -> producing
-  -> compliance_review
-  -> launch_review
-  -> scheduled
-  -> running
-  -> observation_window
-  -> analysis_ready
-  -> decision_review
-  -> promoted | iterate | retired
-```
+An experiment binds one storefront revision, one active hero T-shirt mapping, an optional hero video, one USD budget, one UTC date window, and one Meta campaign mapping. Non-ended windows for one storefront cannot overlap, and a different revision cannot replace the storefront while an experiment is running.
 
-An experiment may also enter `blocked` from an active preparation state or `stopped` from `scheduled`/`running`. Those states require a reason. Resuming creates an explicit transition; it does not erase the interruption.
+Lifecycle is derived from dates:
 
-The difference between `running` and `observation_window` is important: paid acquisition has ended, but late attribution, payment settlement, refunds, and fulfillment costs may still arrive. A result is not final until the agreed observation window closes.
+- `planned` before the start.
+- `running` inside the window.
+- `ended` after the end or a manual early end.
 
-## Exact proposed workflow
+Experiment inputs and campaign mapping are editable only while planned. A running or ended test is frozen; changed inputs require a new experiment. After it ends, the operator records `keep`, `iterate`, or `retire` with notes. That decision never pauses Meta or archives a storefront automatically.
 
-### 1. Niche intake and research
+First-party attribution uses the generated `sd` token and deterministic Meta UTMs. A paid click can receive credit for an order for seven days. The attribution token is passed to Shopify cart attributes and recovered from order data. Replacing a paid-click cookie revokes the prior browser-linked touch, and withdrawing consent prevents later Pixel/CAPI use. Meta receives browser identifiers only after consent and receives the anonymous click ID only as a SHA-256 hash. Internal last-paid-click results and Meta-reported results are displayed separately.
 
-System-assisted:
+The append-only ledger uses positive Shopify net merchandise revenue and customer-paid shipping, then negative refunds, chargebacks, Printful product/shipping/tax costs, provider adjustments, replacements, Shopify payment/FX fees, and Meta spend. Shopify's order projection retains discounts for explanation and reconciliation, but the ledger does not subtract them again from already-net merchandise revenue. Corrections supersede earlier entries instead of overwriting them. Customer sales tax is pass-through and excluded from contribution. Shopify fees are not assumed to be universally constant: actual payment and FX effects come from balance transactions when available, while the Shopify plan, VPS, apps, and other subscriptions are manually recorded as portfolio overhead.
 
-- Present a structured niche brief and retain links, notes, AI outputs, and previous experiment history supplied by the operator.
-- Track brief completeness and surface unresolved risk-review items.
+When synchronized records do not contain actual payment/FX fees, chargebacks, replacements, or exceptional adjustments, the operator can append a source-referenced manual entry. Re-entering that source and kind creates a superseding revision. Fixed Shopify, app, VPS, and software costs are appended by month to the separate portfolio-overhead list.
 
-Manual:
-
-- The operator researches candidate ideas, including by using external AI tools directly, and enters the useful results.
-- The operator reviews source quality and community fit.
-- An operator rejects unsafe, exploitative, highly sensitive, or legally questionable niches.
-- An operator selects a niche and records the reason for testing it.
-
-Gate: an approved niche brief, named owner, and initial risk assessment are required before production.
-
-### 2. Offer, design, and storefront production
-
-System-assisted:
-
-- Provide structured inputs and reusable templates for approved product concepts, design directions, storefront copy, prices, and ad hypotheses.
-- Validate file dimensions, resolution, transparency, color profile, printable area, and variant coverage.
-- Assemble a storefront draft from reusable components and niche-specific configuration.
-
-Manual:
-
-- The operator uses external AI tools where useful and supplies the selected creative and brand inputs.
-- The operator chooses or rejects concepts and checks that the work is actually relevant to the community.
-- The operator checks trademarks, copyright risk, prohibited content, factual claims, and provider/ad-platform policies.
-- The operator inspects product mockups and approves the exact immutable design and copy versions.
-- A physical sample is optional for the first test, although the operator may require one before meaningful scale or for a materially new garment/print configuration.
-
-Gate: only approved versions can be attached to an experiment.
-
-### 3. Experiment definition
-
-Automated:
-
-- Provide a form for the operator to define products, prices, Meta audience, creatives, attribution settings, budget, duration, minimum data requirements, stopping rules, and observation window.
-- Estimate unit economics and reject a configuration whose maximum plausible margin cannot support the test.
-- Run readiness checks for domain routing, checkout, payment, fulfillment mapping, policies, analytics events, consent, inventory/availability, and mobile rendering.
-
-Manual:
-
-- The operator approves the spend ceiling and test schedule.
-- The operator approves the exact storefront, offer, audience, creatives, and stopping rules.
-- The operator performs a final end-to-end test order before the first live experiment and after material checkout or fulfillment changes.
-
-Gate: approval freezes an `ExperimentVersion`. Publication or spending against an unapproved version is forbidden.
-
-### 4. Launch
-
-System-assisted after approval:
-
-- Prepare the storefront configuration and expose a deliberate publish control.
-- Create or update provider products and verify variant mappings.
-- Generate deterministic tracking parameters and record the Meta campaign identifiers configured by the operator.
-- Verify the live landing page and analytics events.
-
-Manual:
-
-- The operator publishes the storefront and creates, schedules, activates, and pauses Meta campaigns.
-- If an external platform materially changes, rejects, or expands the approved setup, the experiment returns to review rather than accepting the change silently.
-
-### 5. Running the test
-
-Automated:
-
-- Ingest ad spend, storefront events, orders, payment fees, taxes, fulfillment charges, refunds, replacements, and shipping costs.
-- Reconcile webhook events with periodic provider polling so missed events are detected.
-- Update a live operational dashboard and send exception alerts.
-- Create urgent reminders when the budget ceiling, tracking failure, broken checkout, unavailable fulfillment, policy rejection, or a predefined catastrophic-loss rule needs operator action.
-- Record the operator's response and the data that triggered the reminder.
-
-Manual:
-
-- The operator handles customer questions, cancellations, returns, replacements, and escalated delivery problems.
-- The operator investigates alerts, operates the campaign, and decides whether a stopped experiment can resume.
-- The operator does not optimize creatives, pricing, audience, or landing pages inside the frozen test. A desired change creates an `iterate` decision and a new experiment version.
-
-### 6. Close and reconcile
-
-Automated:
-
-- Create an urgent close reminder when the approved time or spend limit is reached.
-- Enter the observation window and continue ingesting late conversions and costs.
-- Reconcile orders, provider charges, refunds, and ad invoices.
-- Flag missing or conflicting costs; do not silently substitute zero.
-- Mark analysis ready only when required data is complete or an authorized operator accepts documented data limitations.
-
-Manual:
-
-- An operator resolves reconciliation exceptions and records unavoidable uncertainty.
-- Finance or the owner periodically verifies provider statements against the internal ledger.
-
-### 7. Evaluate and decide
-
-Automated:
-
-- Calculate contribution profit, contribution margin, acquisition cost, conversion rate, refund/replacement rate, and confidence/data-quality indicators.
-- Compare a challenger with the weakest eligible champion using the same normalized decision window and cost policy.
-- Produce a recommendation with the evidence and threshold that caused it.
-
-Manual:
-
-- The operator chooses `promoted`, `iterate`, or `retired` and records rationale.
-- Promotion or champion retirement is never executed only from an AI recommendation.
-- A human may override the recommendation, but must record why so the policy can be improved later.
-
-### 8. Apply the decision and retain learning
-
-System-assisted after approval:
-
-- For promotion, prepare the champion assignment and next configurable budget tier for the operator.
-- For iteration, copy selected inputs into a new draft while preserving lineage.
-- For retirement, preserve orders, assets, events, and analysis while reminding the operator to unpublish customer access and stop future spend.
-- Provide the evidence and structured fields for the operator to record successes, failures, and unresolved hypotheses for later experiments.
-
-Manual:
-
-- An operator approves any increased budget tier.
-- The owner periodically reviews whether the scoring and promotion rules still reflect business goals.
+Amounts retain provider-native minor units and currency. Non-EUR facts remain pending until the operator appends the actual EUR settlement or invoice value through the audited reconciliation action. Incomplete totals display as pending rather than zero. Missing costs never silently become zero.
 
 ## Automation boundary
 
-The system should automate background data work when the action is repeatable, observable, reversible, and bounded by an approved policy. Examples are validating assets, synchronizing providers, collecting events, calculating metrics, tracking deadlines, creating reminders, and preparing comparisons.
+Automated:
 
-The system should require the operator when an action creates financial exposure, changes a public storefront or campaign, affects a customer, carries legal or reputational risk, requires subjective community judgment, or makes an exception to policy. This includes niche acceptance, rights and content approval, publication, campaign operation, refunds, budget changes, champion replacement, and unresolved customer disputes.
+- Validate typed brand manifests and signed asset uploads.
+- Process verified, deduplicated Shopify and Printful webhooks.
+- Reconcile Shopify orders and current/historical product health, Printful orders/costs/shipments, and Meta Insights nightly at 03:00 UTC.
+- Run the same idempotent reconciliation when the operator presses “Sync now.”
+- Record provider freshness and integration issues.
+- Calculate first-party attribution and contribution economics.
+- Derive a non-acknowledgeable “Next actions” list for budgets near or over their ceiling, ended tests without outcomes, pending ledger reconciliation, and orders more than 48 hours old without Printful fulfillment.
+- Send consented Meta Pixel and Conversions API events with shared event IDs.
 
-AI output is never itself an approval. The platform should let the operator attach relevant AI-derived inputs and outputs to an experiment without trying to capture or automate every external AI conversation.
+Manual:
 
-## Failure and exception policy
+- Research and select niches.
+- Create and rights-review designs, product listings, mockups, prices, shipping, and legal text.
+- Use hosted AI through MCP and accept or revise its structured draft.
+- Publish or archive a storefront.
+- Create, activate, modify, pause, and fund Meta campaigns.
+- Handle customer service, cancellations, refunds, returns, replacements, and Printful holds in provider tools.
+- Review evidence and record experiment outcomes.
 
-- Provider calls must be idempotent where possible and safe to retry.
-- Webhooks are authenticated, stored before processing, and deduplicated.
-- No failed external action advances workflow state.
-- A partial launch triggers an urgent operator alert with the required recovery actions, such as pausing ads or unpublishing a broken product.
-- The operator configures Meta's own budget limit, while internal monitoring supplies an additional reminder. Ad platforms can report with delay and may overspend slightly.
-- Missing cost data blocks final profit classification unless a human accepts a documented conservative estimate.
-- Secrets and provider permissions follow least privilege; production actions are audit logged.
+There are no scheduled notifications, acknowledgement queues, approval roles, general workflow state machine, automatic product/campaign creation, automatic budget changes, or champion replacement. The derived dashboard list is current evidence, not a reminder system.
 
-## Recommended implementation sequence
+## Exact recurring workflow
 
-1. Define the experiment states, approvals, ledger, and one-niche data model.
-2. Build one multi-tenant storefront path with manual catalog entry and a test checkout.
-3. Integrate the selected print provider and complete a test fulfillment/refund lifecycle using one consistent US fulfillment route.
-4. Integrate Meta reporting and capture deterministic campaign attribution plus spend while campaign operation remains manual.
-5. Calculate order-level and experiment-level contribution profit with reconciliation flags.
-6. Build the operator approval and decision screens around the complete loop.
-7. Add reminders and safe background synchronization one step at a time, automating operational actions only if repeated use proves it worthwhile.
-8. Add champion/challenger scheduling only after several manually supervised experiments expose the real operating rules.
+1. On the weekend, run provider syncs and inspect data freshness, contribution, no-PII orders, and open integration issues.
+2. Review ended tests and record `keep`, `iterate`, or `retire`. Manually pause or change Meta and Shopify where the decision requires it.
+3. Research the next niche and create a draft with a sufficiently detailed niche brief.
+4. Let the hosted AI client read the MCP schema and brief, write the structured brand draft, upload allowed assets, and return the authenticated preview URL.
+5. Review the draft and assets. Create three designs and nine products manually in Printful/Shopify, then import and map each Shopify handle.
+6. Select the hero T-shirt, optionally upload the externally generated MP4 hero creative, and define the experiment window and budget.
+7. Create the Meta campaign manually, save its IDs, and use the generated tracking link.
+8. Publish the storefront after readiness and safe-mode checkout/tracking checks, then activate Meta manually.
+9. Shopify and Printful webhooks update operations while nightly reconciliation catches missed or corrected data. Repeat at the next review.
 
-## Decisions still needed before implementation
+## Failure and security behavior
 
-The following answers materially change the architecture or operating workflow:
-
-1. Which print-on-demand provider and exact US product/fulfillment route best meet the quality, cost, delivery, reliability, branding, returns, and Shopify integration requirements?
-2. How will SvelteKit use Shopify: a headless Storefront API implementation with Shopify Checkout, or a Shopify-hosted storefront with SvelteKit limited to the operator application?
-3. What is the first product assortment, including garment models, colors, sizes, print placements, and pricing policy?
-4. Is attribution based on first-party last-click, Meta-reported results, or both shown separately without pretending they are identical?
-5. Which reminders are merely informational, which are urgent, and which require acknowledgement before workflow can continue?
-6. What customer-support promise will be offered for response time, cancellations, returns, provider-caused delays, replacements, and chargebacks?
-7. What precisely qualifies a challenger to replace a champion: total contribution profit, profit per dollar or day, minimum sample requirements, or another configurable policy?
-8. Which storefront design properties are configuration, which reusable layout variants are allowed, and when does a brand require new code?
-9. What privacy/consent tooling and retention policy will cover Shopify, Meta Pixel/Conversions API, and the operator dashboard?
+- Webhook signatures are verified against raw bytes before parsing; provider event keys make retries idempotent.
+- Provider data is parsed through strict schemas. Incompatible responses create visible issues rather than malformed projections.
+- Jobs use bounded retry/backoff and correlation IDs. Provider outages do not make application readiness fail.
+- Hostnames are allowlisted; tenant context lives in request locals and never in shared SSR state.
+- Draft uploads use short-lived, size/MIME-bound presigned URLs into a non-public bucket. An asset record remains unusable until a matching object-storage `HEAD` confirmation succeeds. Publication copies only confirmed storefront images/video to the separate public bucket; private PNG print files are never promoted. HTML and active SVG are not accepted.
+- Admin/MCP mutations are audited with actor, client, entity, request, and revision context.
+- Storefront tracking is consent-aware. Public legal text is plain text and never rendered as HTML.
+- `/health/live` checks the process; `/health/ready` checks PostgreSQL and reports production configuration errors.
 
 ## Deliberately deferred
 
-The following should not be designed in detail until the first loop supplies evidence:
-
-- A fully autonomous niche-research agent.
-- Multiple fulfillment or advertising providers.
-- A data warehouse or bespoke machine-learning ranking system.
-- Automatic champion replacement.
-- A generalized visual page builder.
-- Twenty simultaneous stores and weekly batch orchestration.
-- Complex role-based approval separation for a one-person operation.
+- Markets outside the contiguous US and DC, additional currencies, and translation.
+- Customer accounts or a local support CRM.
+- Additional commerce, POD, ad, identity, and storage providers.
+- Autonomous niche research, design generation, or storefront publication.
+- A free-form page builder or arbitrary theme code.
+- Automatic experiment ranking, champion replacement, and 20-store scheduling.
+- A separate warehouse, Redis, microservices, or multiple application replicas.

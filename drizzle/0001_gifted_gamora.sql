@@ -1,0 +1,1 @@
+ALTER TABLE "storefront" ADD CONSTRAINT "storefront_published_revision_id_storefront_revision_id_fk" FOREIGN KEY ("published_revision_id") REFERENCES "public"."storefront_revision"("id") ON DELETE set null ON UPDATE no action;
